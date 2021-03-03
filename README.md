@@ -59,6 +59,18 @@ server {
 }
 
 server {
+  listen 8989;
+  aio threads;
+  ...
+  ngx_link_func_lib "/path/to/your/libcfuntest.so"; # sharing data memory with server 1 if the path are same with server 1
+  ...
+  ...
+  location = /testCFunGreeting {
+      ngx_link_func_call "my_app_simple_get_greeting" "rewrite_phase" # when you want to operate on request in rewrite phase
+  }
+}
+
+server {
   listen 8999;
   aio threads;
   ...

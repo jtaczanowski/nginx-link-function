@@ -113,6 +113,7 @@ typedef struct {
 
 typedef struct {
     ngx_str_t                      _method_name;
+    ngx_flag_t                      rewrite_phase;
     ngx_http_link_func_app_handler _handler;
     ngx_array_t                    *ext_req_headers;
 #if (NGX_LINK_FUNC_SUBREQ) && (nginx_version > 1013009)
@@ -167,9 +168,11 @@ static ngx_int_t ngx_http_link_func_subrequest_done(ngx_http_request_t *r, void 
 static ngx_int_t ngx_http_link_func_process_subrequest(ngx_http_request_t *r, ngx_http_link_func_subreq_conf_t *subreq, ngx_http_link_func_internal_ctx_t *ctx);
 #endif
 static ngx_int_t ngx_http_link_func_content_handler(ngx_http_request_t *r);
+static ngx_int_t ngx_http_link_func_precontent_wraper_handler(ngx_http_request_t *r);
 static ngx_int_t ngx_http_link_func_precontent_handler(ngx_http_request_t *r);
 static void ngx_http_link_func_parse_ext_request_headers(ngx_http_request_t *r, ngx_array_t *ext_req_headers);
 static ngx_int_t ngx_http_link_func_rewrite_handler(ngx_http_request_t *r);
+static ngx_int_t ngx_http_link_func_rewrite_wraper_handler(ngx_http_request_t *r);
 static ngx_int_t ngx_http_link_func_process_init(ngx_cycle_t *cycle);
 static void ngx_http_link_func_process_exit(ngx_cycle_t *cycle);
 static ngx_int_t ngx_http_link_func_module_init(ngx_cycle_t *cycle);
@@ -300,7 +303,7 @@ static ngx_command_t ngx_http_link_func_commands[] = {
     },
 #endif
     {   ngx_string("ngx_link_func_call"), /* directive */
-        NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1, /* location context and takes 1 or 2 arguments*/
+        NGX_HTTP_LOC_CONF | NGX_CONF_TAKE12, /* location context and takes 1 or 2 arguments*/
         ngx_http_link_func_init_method, /* configuration setup function */
         NGX_HTTP_LOC_CONF_OFFSET, /* No offset. Only one context is supported. */
         offsetof(ngx_http_link_func_loc_conf_t, _method_name), /* No offset when storing the module configuration on struct. */
@@ -625,14 +628,26 @@ ngx_http_link_func_subrequest_cmd(ngx_conf_t *cf, ngx_command_t *cmd, void *conf
 static char *
 ngx_http_link_func_init_method(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     ngx_http_link_func_srv_conf_t *scf;
-
+    ngx_http_link_func_loc_conf_t *lcf = conf;
+    ngx_str_t                     *values;
     scf = ngx_http_conf_get_module_srv_conf(cf, ngx_http_link_func_module);
+    values = cf->args->elts;
 
-    if (scf && scf->_libname.len > 0) {
-        return ngx_conf_set_str_slot(cf, cmd, conf);
+    if (scf == NULL || scf->_libname.len == 0) {
+        return "No application linking in server block";
     }
 
-    return "No application linking in server block";
+    if (cf->args->nelts == 3 ) {
+        if (ngx_strncmp(values[2].data, "rewrite_phase", 14) == 0) {
+            lcf->rewrite_phase=1;
+
+        } else {
+            lcf->rewrite_phase=0;
+        }
+    }
+
+    lcf->_method_name=values[1];
+    return NGX_OK;
 } /* ngx_http_link_func_init_method */
 
 static ngx_int_t
@@ -692,7 +707,7 @@ ngx_http_link_func_post_configuration(ngx_conf_t *cf) {
             return NGX_ERROR;
         }
 
-        *h = ngx_http_link_func_rewrite_handler;
+        *h = ngx_http_link_func_rewrite_wraper_handler;
 
         /***Enable pre content phase for apps concurrent processing request layer, NGX_DONE and wait for finalize request ***/
 #if (nginx_version > 1013003)
@@ -700,7 +715,7 @@ ngx_http_link_func_post_configuration(ngx_conf_t *cf) {
         if (h == NULL) {
             return NGX_ERROR;
         }
-        *h = ngx_http_link_func_precontent_handler;
+        *h = ngx_http_link_func_precontent_wraper_handler;
 
         h = ngx_array_push(&cmcf->phases[NGX_HTTP_CONTENT_PHASE].handlers);
         if (h == NULL) {
@@ -1251,7 +1266,6 @@ ngx_http_link_func_process_t_handler(void *data, ngx_log_t *log)
     ngx_http_request_t *r = app_ctx->__r__;
     ngx_http_link_func_internal_ctx_t *internal_ctx = ngx_http_get_module_ctx(r, ngx_http_link_func_module);
     ngx_http_link_func_loc_conf_t *lcf = ngx_http_get_module_loc_conf(r, ngx_http_link_func_module);
-
     if (internal_ctx == NULL) {
         ngx_log_error(NGX_LOG_EMERG, r->connection->log, 0, "error while processing worker thread process");
         return;
@@ -1697,6 +1711,43 @@ ngx_http_link_func_parse_ext_request_headers(ngx_http_request_t *r, ngx_array_t 
     }
 }
 /**
+ * Rewrite and optionaly precontent handler when working with rewrite_phase flag)
+ * Ref:: https://github.com/calio/form-input-nginx-module
+ * @param r
+ *   Pointer to the request structure. See http_request.h.
+ * @return
+ *   The status of the response generation.
+ */
+static ngx_int_t
+ngx_http_link_func_rewrite_wraper_handler(ngx_http_request_t *r) {
+    ngx_http_link_func_loc_conf_t  *lcf = ngx_http_get_module_loc_conf(r, ngx_http_link_func_module);
+    ngx_int_t result = ngx_http_link_func_rewrite_handler(r);
+    if (result == NGX_DECLINED) {
+        if (lcf && lcf->rewrite_phase==1) {
+            return ngx_http_link_func_precontent_handler(r);
+        }
+    }
+    return result;
+}
+
+/**
+ * Precontent handler and optionaly rewrite handler (when working with rewrite_phase flag).
+ * Ref:: https://github.com/calio/form-input-nginx-module
+ * @param r
+ *   Pointer to the request structure. See http_request.h.
+ * @return
+ *   The status of the response generation.
+ */
+static ngx_int_t
+ngx_http_link_func_precontent_wraper_handler(ngx_http_request_t *r) {
+    ngx_http_link_func_loc_conf_t  *lcf = ngx_http_get_module_loc_conf(r, ngx_http_link_func_module);
+    if (lcf && lcf->rewrite_phase==1){
+        return NGX_DECLINED;
+    }
+    return ngx_http_link_func_precontent_handler(r);
+}
+
+/**
  * Rewrite handler.
  * Ref:: https://github.com/calio/form-input-nginx-module
  * @param r
@@ -1723,7 +1774,6 @@ ngx_http_link_func_rewrite_handler(ngx_http_request_t *r) {
         return NGX_DECLINED;
     }
 #endif
-
     if (r->method & (NGX_HTTP_POST | NGX_HTTP_PUT | NGX_HTTP_PATCH)) {
         // r->request_body_in_single_buf = 1;
         // r->request_body_in_clean_file = 1;

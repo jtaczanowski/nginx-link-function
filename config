@@ -89,21 +89,20 @@ else
 have=DISB_NGX_LINK_FUNC_SUBREQ . auto/have
 fi
 
-
 if test -n "$ngx_module_link"; then
-    ngx_module_type=HTTP
+    ngx_module_type=HTTP_FILTER
     ngx_module_name=$ngx_addon_name
     ngx_module_deps="$HTTP_LINK_FUNC_DEPS"
     ngx_module_srcs="$HTTP_LINK_FUNC_SRCS"
     #ngx_module_libs=" -rdynamic -ldl -lpthread -lpcre -Wl,-E"
     # ngx_module_libs="-ldl"
     #ngx_module_libs="-lunwind-coredump -lunwind-generic -lunwind-ptrace -lunwind"
-    
+    ngx_module_order= "ngx_http_modsecurity_module $ngx_module_name"  
     . auto/module
 else
   # CORE_INCS="$CORE_INCS $ngx_feature_path"
   # CORE_LIBS="$CORE_LIBS -ldl"
-  HTTP_MODULES="$HTTP_MODULES ngx_http_link_func_module"
+  HTTP_FILTER_MODULES="$HTTP_FILTER_MODULES ngx_http_link_func_module"
   NGX_ADDON_SRCS="$NGX_ADDON_SRCS $HTTP_LINK_FUNC_SRCS"
   NGX_ADDON_DEPS="$NGX_ADDON_DEPS $HTTP_LINK_FUNC_DEPS"
 fi
